@@ -26,8 +26,8 @@ public class LethalJumpscare : BaseUnityPlugin
     private ConfigEntry<int>? minTimer;
     private ConfigEntry<int>? maxTimer;
 
-    public static int MinTimer => Instance?.minTimer?.Value ?? MIN_TIMER;
-    public static int MaxTimer => Instance?.maxTimer?.Value ?? MAX_TIMER;
+    public static int MinTimer => Instance.minTimer?.Value ?? MIN_TIMER;
+    public static int MaxTimer => Instance.maxTimer?.Value ?? MAX_TIMER;
 
     private const string FLASHBANG_SOUND = "Sounds/flashbang.ogg";
     public static AudioClip? FlashbangSound { get; private set; }
@@ -138,12 +138,47 @@ public class LethalJumpscare : BaseUnityPlugin
     }
 
     private static Coroutine? jumpscare;
+    private static readonly int MainTex = Shader.PropertyToID("_MainTex");
 
     private static IEnumerator Jumpscare()
     {
         Logger.LogDebug($">> Jumpscare() FlashbangSound:{a(FlashbangSound)}");
-        if (FlashbangSound is null)
+        if (!FlashbangSound)
             goto end;
+
+        var shader = Shader.Find("HDRP/Unlit");
+        if (!shader)
+        {
+            Logger.LogWarning("Shader not found, using fallback");
+
+            var audioSourceObjectFb = new GameObject();
+            var audioSourceFb = audioSourceObjectFb.AddComponent<AudioSource>();
+            audioSourceObjectFb.transform.position = Vector3.zero;
+            audioSourceFb.PlayOneShot(FlashbangSound);
+
+            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = false;
+            do
+            {
+                Logger.LogDebug(
+                    $"Sound playing, waiting... {GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled}"
+                );
+                Graphics.Blit(
+                    JumpscareImage,
+                    GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture
+                );
+                yield return null;
+            } while (audioSourceFb && audioSourceFb.isPlaying);
+            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = true;
+
+            if (audioSourceObjectFb)
+                Destroy(audioSourceObjectFb);
+
+            goto end;
+        }
+
+        var material = new Material(shader);
+        material.SetTexture(MainTex, JumpscareImage);
+        material.color = new Color(255f, 255f, 255f, 0.2f);
 
         var audioSourceObject = new GameObject();
         var audioSource = audioSourceObject.AddComponent<AudioSource>();
@@ -151,17 +186,18 @@ public class LethalJumpscare : BaseUnityPlugin
         audioSource.PlayOneShot(FlashbangSound);
 
         GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = false;
-        while (audioSource && audioSource.isPlaying)
+        do
         {
             Logger.LogDebug(
                 $"Sound playing, waiting... {GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled}"
             );
             Graphics.Blit(
-                JumpscareImage,
-                GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture
+                null,
+                GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture,
+                material
             );
             yield return null;
-        }
+        } while (audioSource && audioSource.isPlaying);
         GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = true;
 
         while (audioSource && audioSource.isPlaying)
@@ -176,8 +212,14 @@ public class LethalJumpscare : BaseUnityPlugin
         string a(AudioClip? audioClip) => audioClip == null ? "null" : audioClip.ToString();
     }
 
-    private static IEnumerator LoadSound(string path, Action<AudioClip> callback)
+    private static IEnumerator LoadSound(
+        string path,
+        Action<AudioClip> success,
+        Action<string>? error = null
+    )
     {
+        const string ERR_UNKNOWN_TYPE = "Unknown file type";
+
         var audioType = Path.GetExtension(path).ToLower() switch
         {
             ".ogg" => AudioType.OGGVORBIS,
@@ -187,10 +229,13 @@ public class LethalJumpscare : BaseUnityPlugin
             ".aiff" => AudioType.AIFF,
             _ => AudioType.UNKNOWN,
         };
-        Logger.LogDebug($">> LoadSound({Path.GetFullPath(path)}) audioType:{audioType}");
+        Logger.LogDebug(
+            $">> LoadSound({Path.GetFullPath(path)}, {success}, {error}) audioType:{audioType}"
+        );
         if (audioType == AudioType.UNKNOWN)
         {
-            Logger.LogError($"Error loading {Path.GetFullPath(path)}: Unknown file type");
+            Logger.LogError($"Error loading {Path.GetFullPath(path)}: {ERR_UNKNOWN_TYPE}");
+            error?.Invoke(ERR_UNKNOWN_TYPE);
             yield break;
         }
 
@@ -200,6 +245,7 @@ public class LethalJumpscare : BaseUnityPlugin
         if (webRequest.result != UnityWebRequest.Result.Success)
         {
             Logger.LogError($"Error loading {Path.GetFullPath(path)}: {webRequest.error}");
+            error?.Invoke(webRequest.error);
             yield break;
         }
 
@@ -207,16 +253,21 @@ public class LethalJumpscare : BaseUnityPlugin
         if (audioClip && audioClip.loadState == AudioDataLoadState.Loaded)
         {
             Logger.LogInfo($"Loaded {Path.GetFileName(path)}");
-            callback(audioClip);
+            success(audioClip);
             yield break;
         }
 
         Logger.LogWarning($"Error loading {Path.GetFullPath(path)}: {audioClip.loadState}");
+        error?.Invoke(audioClip.loadState.ToString());
     }
 
-    private static IEnumerator LoadImage(string path, Action<Texture2D> callback)
+    private static IEnumerator LoadImage(
+        string path,
+        Action<Texture2D> success,
+        Action<string>? error = null
+    )
     {
-        Logger.LogDebug($">> LoadImage({Path.GetFullPath(path)}, {callback})");
+        Logger.LogDebug($">> LoadImage({Path.GetFullPath(path)}, {success}, {error})");
 
         var webRequest = UnityWebRequestTexture.GetTexture(path);
         yield return webRequest.SendWebRequest();
@@ -224,6 +275,7 @@ public class LethalJumpscare : BaseUnityPlugin
         if (webRequest.result != UnityWebRequest.Result.Success)
         {
             Logger.LogError($"Error loading {Path.GetFullPath(path)}: {webRequest.error}");
+            error?.Invoke(webRequest.error);
             yield break;
         }
 
@@ -231,13 +283,33 @@ public class LethalJumpscare : BaseUnityPlugin
         if (texture2d)
         {
             Logger.LogInfo($"Loaded {Path.GetFileName(path)}");
-            callback(texture2d);
+            success(texture2d);
             yield break;
         }
 
         Logger.LogWarning($"Error loading {Path.GetFullPath(path)}");
+        error?.Invoke(string.Empty);
     }
 
     private string rel(string path) =>
         Path.Combine(Path.GetDirectoryName(GetType().Assembly.Location) ?? string.Empty, path);
+}
+
+static class MaterialExtension
+{
+    private static readonly int SrcBlend = Shader.PropertyToID("_SrcBlend");
+    private static readonly int DstBlend = Shader.PropertyToID("_DstBlend");
+    private static readonly int ZWrite = Shader.PropertyToID("_ZWrite");
+
+    internal static void Transparent(this Material material)
+    {
+        material.SetOverrideTag("RenderType", "Transparent");
+        material.SetInt(SrcBlend, (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        material.SetInt(DstBlend, (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        material.SetInt(ZWrite, 0);
+        material.DisableKeyword("_ALPHATEST_ON");
+        material.EnableKeyword("_ALPHABLEND_ON");
+        material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+        material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+    }
 }
