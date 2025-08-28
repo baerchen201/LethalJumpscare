@@ -1,0 +1,1 @@
+![jumpscare](https://raw.githubusercontent.com/baerchen201/LethalJumpscare/refs/heads/main/BepInEx/plugins/Images/jumpscare.png)

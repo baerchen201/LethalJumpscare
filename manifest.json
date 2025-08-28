@@ -1,0 +1,7 @@
+{
+  "name": "VeryScaryJumpScare",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/baerchen201/LethalJumpscare",
+  "description": "funny jumpscare mod",
+  "dependencies": ["BepInEx-BepInExPack-5.4.2100"]
+}
