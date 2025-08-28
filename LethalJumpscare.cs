@@ -1,12 +1,12 @@
 using System;
 using System.Collections;
 using System.IO;
-using System.Text;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using GameNetcodeStuff;
 using HarmonyLib;
+using LethalModUtils;
 using UnityEngine;
 using UnityEngine.Networking;
 using Random = System.Random;
@@ -33,7 +33,7 @@ public class LethalJumpscare : BaseUnityPlugin
     public static AudioClip? FlashbangSound { get; private set; }
 
     private const string JUMPSCARE_IMAGE = "Images/jumpscare.png";
-    public static Texture2D JumpscareImage { get; private set; } = Texture2D.whiteTexture;
+    public static Texture2D? JumpscareImage { get; private set; }
 
     private void Awake()
     {
@@ -53,8 +53,8 @@ public class LethalJumpscare : BaseUnityPlugin
             "What the maximum waiting time should be for a jumpscare (after landing on a moon)"
         );
 
-        StartCoroutine(LoadSound(rel(FLASHBANG_SOUND), clip => FlashbangSound = clip));
-        StartCoroutine(LoadImage(rel(JUMPSCARE_IMAGE), texture2d => JumpscareImage = texture2d));
+        FlashbangSound = Audio.TryLoad(rel(FLASHBANG_SOUND), TimeSpan.FromSeconds(10));
+        a();
         Patch();
 
         Logger.LogInfo($"{MyPluginInfo.PLUGIN_GUID} v{MyPluginInfo.PLUGIN_VERSION} has loaded!");
@@ -67,6 +67,8 @@ public class LethalJumpscare : BaseUnityPlugin
             Harmony.PatchAll();
             Logger.LogDebug("Finished patching!");
         }
+
+        async void a() => JumpscareImage = await Image.TryLoadAsync(rel(JUMPSCARE_IMAGE));
     }
 
     private static Random timerRandom = null!;
@@ -138,143 +140,52 @@ public class LethalJumpscare : BaseUnityPlugin
     }
 
     private static Coroutine? jumpscare;
-    private static readonly int MainTex = Shader.PropertyToID("_MainTex");
 
     private static IEnumerator Jumpscare()
     {
-        Logger.LogDebug($">> Jumpscare() FlashbangSound:{a(FlashbangSound)}");
-        if (!FlashbangSound)
-            goto end;
-
-        var shader = Shader.Find("HDRP/Unlit");
-        if (!shader)
-        {
-            Logger.LogWarning("Shader not found, using fallback");
-
-            var audioSourceObjectFb = new GameObject();
-            var audioSourceFb = audioSourceObjectFb.AddComponent<AudioSource>();
-            audioSourceObjectFb.transform.position = Vector3.zero;
-            audioSourceFb.PlayOneShot(FlashbangSound);
-
-            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = false;
-            do
-            {
-                Logger.LogDebug(
-                    $"Sound playing, waiting... {GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled}"
-                );
-                Graphics.Blit(
-                    JumpscareImage,
-                    GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture
-                );
-                yield return null;
-            } while (audioSourceFb && audioSourceFb.isPlaying);
-            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = true;
-
-            if (audioSourceObjectFb)
-                Destroy(audioSourceObjectFb);
-
-            goto end;
-        }
-
-        var material = new Material(shader);
-        material.SetTexture(MainTex, JumpscareImage);
-        material.color = new Color(255f, 255f, 255f, 0.2f);
-
-        var audioSourceObject = new GameObject();
-        var audioSource = audioSourceObject.AddComponent<AudioSource>();
-        audioSourceObject.transform.position = Vector3.zero;
-        audioSource.PlayOneShot(FlashbangSound);
-
-        GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = false;
-        do
+        try
         {
             Logger.LogDebug(
-                $"Sound playing, waiting... {GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled}"
+                $">> Jumpscare() FlashbangSound:{FlashbangSound?.ToString() ?? "null"}"
             );
+            var player = FlashbangSound?.Play();
+
+            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = false;
+
+            Logger.LogDebug($"   waiting... player:{player?.ToString() ?? "null"}");
             Graphics.Blit(
-                null,
-                GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture,
-                material
+                JumpscareImage ?? Texture2D.whiteTexture,
+                GameNetworkManager.Instance.localPlayerController.gameplayCamera.targetTexture
             );
-            yield return null;
-        } while (audioSource && audioSource.isPlaying);
-        GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = true;
+            yield return player == null
+                ? new WaitForSeconds(5)
+                : new WaitUntil(() => player.State != Audio.AudioPlayer.PlayerState.Playing);
 
-        while (audioSource && audioSource.isPlaying)
-            yield return null;
-        if (audioSourceObject)
-            Destroy(audioSourceObject);
-
-        end:
-        jumpscare = null;
-        yield break;
-
-        string a(AudioClip? audioClip) => audioClip == null ? "null" : audioClip.ToString();
-    }
-
-    private static IEnumerator LoadSound(
-        string path,
-        Action<AudioClip> success,
-        Action<string>? error = null
-    )
-    {
-        const string ERR_UNKNOWN_TYPE = "Unknown file type";
-
-        var audioType = Path.GetExtension(path).ToLower() switch
-        {
-            ".ogg" => AudioType.OGGVORBIS,
-            ".mp3" => AudioType.MPEG,
-            ".wav" => AudioType.WAV,
-            ".m4a" => AudioType.ACC,
-            ".aiff" => AudioType.AIFF,
-            _ => AudioType.UNKNOWN,
-        };
-        Logger.LogDebug(
-            $">> LoadSound({Path.GetFullPath(path)}, {success}, {error}) audioType:{audioType}"
-        );
-        if (audioType == AudioType.UNKNOWN)
-        {
-            Logger.LogError($"Error loading {Path.GetFullPath(path)}: {ERR_UNKNOWN_TYPE}");
-            error?.Invoke(ERR_UNKNOWN_TYPE);
-            yield break;
+            Logger.LogDebug("<< Jumpscare");
+            GameNetworkManager.Instance.localPlayerController.gameplayCamera.enabled = true;
+            player?.Cancel();
         }
-
-        var webRequest = UnityWebRequestMultimedia.GetAudioClip(path, audioType);
-        yield return webRequest.SendWebRequest();
-
-        if (webRequest.result != UnityWebRequest.Result.Success)
+        finally
         {
-            Logger.LogError($"Error loading {Path.GetFullPath(path)}: {webRequest.error}");
-            error?.Invoke(webRequest.error);
-            yield break;
+            jumpscare = null;
         }
-
-        var audioClip = DownloadHandlerAudioClip.GetContent(webRequest);
-        if (audioClip && audioClip.loadState == AudioDataLoadState.Loaded)
-        {
-            Logger.LogInfo($"Loaded {Path.GetFileName(path)}");
-            success(audioClip);
-            yield break;
-        }
-
-        Logger.LogWarning($"Error loading {Path.GetFullPath(path)}: {audioClip.loadState}");
-        error?.Invoke(audioClip.loadState.ToString());
     }
 
     private static IEnumerator LoadImage(
-        string path,
+        Uri uri,
         Action<Texture2D> success,
         Action<string>? error = null
     )
     {
-        Logger.LogDebug($">> LoadImage({Path.GetFullPath(path)}, {success}, {error})");
+        var path = Path.GetFullPath(uri.AbsolutePath);
+        Logger.LogDebug($">> LoadImage({path}, {success}, {error})");
 
         var webRequest = UnityWebRequestTexture.GetTexture(path);
         yield return webRequest.SendWebRequest();
 
         if (webRequest.result != UnityWebRequest.Result.Success)
         {
-            Logger.LogError($"Error loading {Path.GetFullPath(path)}: {webRequest.error}");
+            Logger.LogError($"Error loading {path}: {webRequest.error}");
             error?.Invoke(webRequest.error);
             yield break;
         }
@@ -287,29 +198,10 @@ public class LethalJumpscare : BaseUnityPlugin
             yield break;
         }
 
-        Logger.LogWarning($"Error loading {Path.GetFullPath(path)}");
+        Logger.LogWarning($"Error loading {path}");
         error?.Invoke(string.Empty);
     }
 
-    private string rel(string path) =>
-        Path.Combine(Path.GetDirectoryName(GetType().Assembly.Location) ?? string.Empty, path);
-}
-
-static class MaterialExtension
-{
-    private static readonly int SrcBlend = Shader.PropertyToID("_SrcBlend");
-    private static readonly int DstBlend = Shader.PropertyToID("_DstBlend");
-    private static readonly int ZWrite = Shader.PropertyToID("_ZWrite");
-
-    internal static void Transparent(this Material material)
-    {
-        material.SetOverrideTag("RenderType", "Transparent");
-        material.SetInt(SrcBlend, (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-        material.SetInt(DstBlend, (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
-        material.SetInt(ZWrite, 0);
-        material.DisableKeyword("_ALPHATEST_ON");
-        material.EnableKeyword("_ALPHABLEND_ON");
-        material.DisableKeyword("_ALPHAPREMULTIPLY_ON");
-        material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
-    }
+    private Uri rel(string path) =>
+        new(Path.Combine(Path.GetDirectoryName(GetType().Assembly.Location) ?? string.Empty, path));
 }
