@@ -94,9 +94,6 @@ public class LethalJumpscare : BaseUnityPlugin
         // ReSharper disable once UnusedMember.Local
         private static void Postfix(ref StartOfRound __instance)
         {
-            Logger.LogDebug(
-                $">> UpdatePatch({__instance}) inShipPhase:{__instance.inShipPhase} localPlayerController:{b(__instance.localPlayerController)} firingPlayersCutsceneRunning:{__instance.firingPlayersCutsceneRunning} Timer:{Timer}"
-            );
             if (
                 __instance.inShipPhase
                 || __instance.localPlayerController == null
